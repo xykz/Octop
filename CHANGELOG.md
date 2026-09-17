@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- 修复 PostgreSQL 全新部署中 `knowledge_bases` 缺失 `max_documents` 列导致创建知识库失败（#755）：在 `010_thread_message_projection.pg.sql` 补齐 `ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS max_documents`，并在 `migrate.py` 迁移结束处跨方言统一执行 `_ensure_knowledge_bases_schema(db)`；同时修复 `_map_knowledge_error` 将未分类系统异常误报为“向量模型或依赖尚未就绪”掩盖真实错误的问题，改为记录堆栈并返回 `INTERNAL_ERROR`。
+
 ## [1.0.0] - 2026-09-14
 
 ### 新增
