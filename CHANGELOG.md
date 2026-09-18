@@ -6,6 +6,29 @@
 
 ## [Unreleased]
 
+### 变更
+
+- ACP Runner 管理从侧边栏独立入口迁入「个性化 → ACP 工具」标签页，旧 `/acp` 路径自动重定向
+
+### 新增
+
+- 登录验证码：密码登录可选的人机验证，默认本地滑块（仅前端），支持 Cloudflare Turnstile、hCaptcha、reCAPTCHA v2/v3、腾讯云验证码（强校验提供商由服务端向厂商核验，密钥加密保存，设置页可切换）
+- `octop captcha reset`：被验证码误配置锁定时离线清除已保存设置，回退默认滑块
+- 登录验证码组件语言跟随站点语言（腾讯/turnstile/hcaptcha/reCAPTCHA 全部适配）
+
+### 修复
+
+- 修复自定义 S3 兼容对象存储（`kind=s3` / `kind=custom`）无法写入的问题：`orcakit-harness-agent[all]` 会引入 `deepagents-backends 0.2.0`，harness 优先使用它，但该包停留在 deepagents 0.5/0.6 协议（写入仍传已移除的 `files_update`、`read` 返回带行号的 `str`、仅实现已删除的 `ls_info`/`glob_info`/`grep_raw`），在 deepagents 0.7 下 Admin 存储探测报 `write failed: ... WriteResult.__init__() got an unexpected keyword argument 'files_update'`，读写与列目录全部失效。现在 `s3` 规格改由 Octop 直接构造 harness 内置的 boto3 `S3Backend`（完整适配 deepagents 0.7），探测、浏览与 Agent 运行时均走该实现；client 使用 SigV4 + 自动寻址，兼容 AWS S3、MinIO、Ceph、R2 等
+- 修复 PostgreSQL 全新部署中 `knowledge_bases` 缺失 `max_documents` 列导致创建知识库失败（#755）：在 `010_thread_message_projection.pg.sql` 补齐 `ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS max_documents`，并在 `migrate.py` 迁移结束处跨方言统一执行 `_ensure_knowledge_bases_schema(db)`；同时修复 `_map_knowledge_error` 将未分类系统异常误报为“向量模型或依赖尚未就绪”掩盖真实错误的问题，改为记录堆栈并返回 `INTERNAL_ERROR`。
+- 修复 `config.json` 解析失败时被静默清空的问题（#730）：`octop run --host/--port`、`octop service start --host/--port`、插件开关与插件 seeding 过去会把无法解析的配置当成空配置再写回，导致 `bind_host`、`database` 等全部设置丢失（PostgreSQL 实例会静默退回全新空 SQLite，且无任何告警）；现在直接报错并保留原文件不动，错误信息含行列号但不回显文件内容（其中含数据库凭据），配置写入统一改为原子写
+- `config.json` 无法解析时，`load_config` 的报错现在带上文件路径与行列号（此前是裸 `JSONDecodeError`，不说哪个文件出错），并拒绝“合法 JSON 但不是 object”的文件；报错不回显内容
+- 手动新增通道默认启用：此前创建抽屉的「启用频道」开关默认关闭，保存后紧跟一次 `enabled=false` 的 PATCH，导致新通道"出生即禁用"（created_at == updated_at 且无任何提示，机器人从此静默不回复）。现与后端创建默认值（enabled=1）及扫码绑定流程对齐，保存仅一次 POST，不再产生启停抖动
+- 腾讯验证码票据校验改用 DescribeCaptchaResult 接口（旧端点对新票据返回 decrypt fail）；校验需云 API 密钥签名，设置页新增对应字段
+
+### 变更
+
+- reCAPTCHA v2 暂从设置列表隐藏（无已验证密钥），存量配置仍可校验
+
 ## [1.0.0] - 2026-09-14
 
 ### 新增

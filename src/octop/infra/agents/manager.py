@@ -2366,6 +2366,7 @@ class AgentManager:
 
         from octop.infra.agents.workspace_dir import system_files_path_from_config  # noqa: PLC0415
         from octop.infra.backend.opensandbox_deps import ensure_opensandbox_deps  # noqa: PLC0415
+        from octop.infra.backend.s3_backend import materialize_s3_backends  # noqa: PLC0415
 
         if cfg is None:
             cfg = self._agent_config_dict(row)
@@ -2385,7 +2386,7 @@ class AgentManager:
         elif self._spec_is_opensandbox(backend):
             ensure_opensandbox_deps(allow_install=True)
         return BackendWorkspace(
-            resolve_backend(backend, workspace_dir=workspace_dir),
+            resolve_backend(materialize_s3_backends(backend), workspace_dir=workspace_dir),
             workspace_dir,
             system_files_path=system_files_path_from_config(cfg),
         )
@@ -2866,7 +2867,18 @@ class AgentManager:
         )
         # OpenSandbox.create is not idempotent — reuse the instance already
         # wrapped by ``ws`` so start does not spawn a second remote sandbox.
-        harness_backend: Any = ws.backend if self._spec_is_opensandbox(backend) else backend
+        # S3 leaves become Octop's bundled boto3 backend instances so harness
+        # does not pick the deepagents-0.7-incompatible ``deepagents-backends``;
+        # composite structure is preserved. ``ws.backend`` is already that
+        # instance for a plain S3 backend — reuse it rather than build a second
+        # boto3 client.
+        from octop.infra.backend.s3_backend import (  # noqa: PLC0415
+            materialize_s3_backends,
+            spec_is_s3,
+        )
+
+        reuse_ws = self._spec_is_opensandbox(backend) or spec_is_s3(backend)
+        harness_backend: Any = ws.backend if reuse_ws else materialize_s3_backends(backend)
 
         harness_cfg = HarnessAgentConfig(
             name=_memory_namespace(row.agent_id),
