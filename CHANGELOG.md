@@ -8,6 +8,7 @@
 
 ### 修复
 
+- 修复自定义 S3 兼容对象存储（`kind=s3` / `kind=custom`）无法写入的问题：`orcakit-harness-agent[all]` 会引入 `deepagents-backends 0.2.0`，harness 优先使用它，但该包停留在 deepagents 0.5/0.6 协议（写入仍传已移除的 `files_update`、`read` 返回带行号的 `str`、仅实现已删除的 `ls_info`/`glob_info`/`grep_raw`），在 deepagents 0.7 下 Admin 存储探测报 `write failed: ... WriteResult.__init__() got an unexpected keyword argument 'files_update'`，读写与列目录全部失效。现在 `s3` 规格改由 Octop 直接构造 harness 内置的 boto3 `S3Backend`（完整适配 deepagents 0.7），探测、浏览与 Agent 运行时均走该实现；client 使用 SigV4 + 自动寻址，兼容 AWS S3、MinIO、Ceph、R2 等
 - 修复 PostgreSQL 全新部署中 `knowledge_bases` 缺失 `max_documents` 列导致创建知识库失败（#755）：在 `010_thread_message_projection.pg.sql` 补齐 `ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS max_documents`，并在 `migrate.py` 迁移结束处跨方言统一执行 `_ensure_knowledge_bases_schema(db)`；同时修复 `_map_knowledge_error` 将未分类系统异常误报为“向量模型或依赖尚未就绪”掩盖真实错误的问题，改为记录堆栈并返回 `INTERNAL_ERROR`。
 
 ## [1.0.0] - 2026-09-14
