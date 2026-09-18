@@ -22,6 +22,7 @@ from octop.infra.db.repos.backends import BackendRow
 logger = logging.getLogger(__name__)
 
 _PROBE_CONTENT = "octop-docker-probe"
+_S3_PROBE_CONTENT = "octop-s3-probe"
 _PROBE_TEST_ID = "test"
 
 
@@ -84,12 +85,52 @@ def probe_storage_backend(row: BackendRow) -> dict[str, Any]:
     if spec is None:
         return {"ok": False, "message": "configuration incomplete"}
 
+    if spec.get("type") == "s3":
+        # harness's probe would resolve through ``deepagents-backends``, which is
+        # incompatible with deepagents 0.7; Octop builds the bundled boto3
+        # backend itself instead (see octop.infra.backend.s3_backend).
+        return _probe_s3(spec)
+
     if kind == "postgres" and not spec.get("connection_string"):
         if not row.endpoint:
             return {"ok": False, "message": "host/endpoint not configured"}
         return {"ok": True, "message": "postgres configuration present (no file round-trip)"}
 
     return probe_backend(spec)
+
+
+def _probe_s3(spec: dict[str, Any]) -> dict[str, Any]:
+    """Write→read→delete round-trip against an S3-compatible object store."""
+    backend: Any = None
+    test_path = f"/.harness-probe-{uuid.uuid4().hex}.txt"
+    try:
+        from octop.infra.backend.s3_backend import build_s3_backend  # noqa: PLC0415
+
+        backend = build_s3_backend(spec)
+        write_result = backend.write(test_path, _S3_PROBE_CONTENT)
+        if getattr(write_result, "error", None):
+            return {"ok": False, "message": f"write failed: {write_result.error}"}
+        read_result = backend.read(test_path)
+        if getattr(read_result, "error", None):
+            return {"ok": False, "message": f"read failed: {read_result.error}"}
+        file_data = getattr(read_result, "file_data", None) or {}
+        content = file_data.get("content") if isinstance(file_data, dict) else None
+        if content != _S3_PROBE_CONTENT:
+            return {"ok": False, "message": "read content mismatch"}
+        try:
+            backend.delete_object(test_path)
+        except Exception as exc:
+            return {"ok": False, "message": f"delete failed: {exc}"}
+        return {"ok": True, "message_key": "probe_roundtrip_ok"}
+    except Exception as exc:
+        logger.info("s3 storage probe failed: %s", exc)
+        return {"ok": False, "message": str(exc)}
+    finally:
+        if backend is not None:
+            close = getattr(backend, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
 
 
 def _docker_probe_spec(row: BackendRow) -> dict[str, Any] | None:

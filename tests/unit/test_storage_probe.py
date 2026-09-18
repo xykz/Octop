@@ -198,3 +198,60 @@ def test_opensandbox_probe_reports_install_failure(monkeypatch: pytest.MonkeyPat
     result = probe_storage_backend(_row(kind="opensandbox", bucket="python:3.12"))
     assert result["ok"] is False
     assert "install" in result["message"].lower()
+
+
+class _FakeS3Write:
+    error = None
+
+
+class _FakeS3Read:
+    error = None
+    file_data = {"content": "octop-s3-probe"}
+
+
+def _s3_row() -> BackendRow:
+    return _row(
+        kind="s3",
+        access_key="AKIA",
+        secret_key="secret",
+        bucket="my-bucket",
+        region="us-east-1",
+    )
+
+
+def test_s3_probe_uses_octop_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    from octop.infra.backend import s3_backend as s3_mod
+
+    backend = MagicMock()
+    backend.write.return_value = _FakeS3Write()
+    backend.read.return_value = _FakeS3Read()
+    backend.delete_object = MagicMock()
+
+    captured: dict[str, Any] = {}
+
+    def _build(spec: dict[str, Any]) -> Any:
+        captured["spec"] = spec
+        return backend
+
+    monkeypatch.setattr(s3_mod, "build_s3_backend", _build)
+
+    result = probe_storage_backend(_s3_row())
+    assert result["ok"] is True
+    assert result.get("message_key") == "probe_roundtrip_ok"
+    assert captured["spec"]["type"] == "s3"
+    backend.delete_object.assert_called_once()
+
+
+def test_s3_probe_reports_write_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from octop.infra.backend import s3_backend as s3_mod
+
+    class _FailingWrite:
+        error = "AccessDenied"
+
+    backend = MagicMock()
+    backend.write.return_value = _FailingWrite()
+    monkeypatch.setattr(s3_mod, "build_s3_backend", lambda spec: backend)
+
+    result = probe_storage_backend(_s3_row())
+    assert result["ok"] is False
+    assert "write failed" in result["message"]
