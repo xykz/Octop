@@ -4,12 +4,20 @@
 #
 # 环境变量:
 #   HOME                      — 必须为 /data，使 ~/.octop 映射到数据卷
+#   OCTOP_HOME                — 可选，覆盖数据目录（默认: ${HOME}/.octop）
 #   OCTOP_DEFAULT_PASSWORD    — 首次管理员密码（须 ≥8 位且含字母和数字；
 #                               不设置则自动生成随机密码，凭据写入
-#                               /data/.octop/credential.txt）
+#                               ${OCTOP_HOME}/credential.txt）
 #   OCTOP_ADMIN_USERNAME      — 首次管理员用户名（默认: admin）
 #   OCTOP_ADMIN_DISPLAY_NAME  — 可选显示名
 #   OCTOP_PORT                — 服务端口（默认: 8088）
+#
+# 首次启动判定（修复：PostgreSQL / 自定义 sqlite 路径下误判）：不再探测
+# 写死的 ${OCTOP_HOME}/octop.db——那只是默认 sqlite 布局的代理，用
+# PostgreSQL（无该文件）或 OCTOP_DATABASE_SQLITE_PATH 时会永远判定为首次
+# 启动，进而对已有数据的目录执行 octop init，报 "already exists and is not
+# empty" 并被误当成密码策略失败。改为与 `octop init` 自身前置条件一致：
+# 仅当数据目录不存在或为空时才初始化。
 #
 # 密码兜底（修复 issue #502）：应用侧密码策略带常见弱密码黑名单（含
 # Octop123），旧版默认密码会让 octop init 报 "password is too common"
@@ -19,8 +27,7 @@
 set -euo pipefail
 
 export HOME="${HOME:-/data}"
-OCTOP_HOME="${HOME}/.octop"
-DB_FILE="${OCTOP_HOME}/octop.db"
+OCTOP_HOME="${OCTOP_HOME:-${HOME}/.octop}"
 CREDENTIAL_FILE="${OCTOP_HOME}/credential.txt"
 ADMIN_USERNAME="${OCTOP_ADMIN_USERNAME:-admin}"
 ADMIN_DISPLAY_NAME="${OCTOP_ADMIN_DISPLAY_NAME:-Admin}"
@@ -44,7 +51,17 @@ octop_random_password() {
 
 DEFAULT_PASSWORD="${OCTOP_DEFAULT_PASSWORD:-}"
 
-if [ ! -f "$DB_FILE" ]; then
+# 数据目录不存在或为空 => 尚未初始化（与 `octop init` 的前置条件一致）。
+# 不能用某个具体文件名判断：PostgreSQL 或自定义 sqlite 路径下都没有
+# octop.db，但实例早已初始化。
+octop_home_is_empty() {
+    [ -d "$OCTOP_HOME" ] || return 0
+    local first
+    first="$(find "$OCTOP_HOME" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)"
+    [ -z "$first" ]
+}
+
+if octop_home_is_empty; then
     echo "[entrypoint] 首次启动，正在初始化 Octop..."
 
     if [ -z "$DEFAULT_PASSWORD" ]; then
@@ -57,7 +74,7 @@ if [ ! -f "$DB_FILE" ]; then
         --admin-username "$ADMIN_USERNAME" \
         --admin-password "$DEFAULT_PASSWORD" \
         ${ADMIN_DISPLAY_NAME:+--admin-display-name "$ADMIN_DISPLAY_NAME"}; then
-        echo "[entrypoint] 指定的初始密码未通过应用密码策略（过弱或过于常见），改用随机密码重试 ..."
+        echo "[entrypoint] 首次初始化失败（常见原因：初始密码未通过应用密码策略），改用随机密码重试 ..."
         DEFAULT_PASSWORD="$(octop_random_password)"
         octop init \
             --yes \
