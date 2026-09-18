@@ -1,15 +1,18 @@
 name: Docker Publish
 
-# 仅在版本标签（v*）上构建并同步发布镜像到 Docker Hub 与 GHCR。
-# 文档与对外引用统一使用：ghcr.io/tencentcloud/octop
-# （Hub 仍用 DOCKERHUB_* secrets 同步推送。）
+# 在版本标签（v*）上构建并推送镜像；同时支持手动 workflow_dispatch（可产出 latest）。
+#
+# Docker Hub 为可选：仅当仓库配置了 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 时同步推送；
+# 未配置时（例如 fork）只推 GHCR。GHCR 命名空间取自 github.repository，
+# 例如上游为 ghcr.io/tencentcloud/octop，fork 为 ghcr.io/<owner>/octop。
 #
 # 触发路径：
 #   1. 人工推送 v* tag → on.push.tags
 #   2. Auto Tag 用 GITHUB_TOKEN 推 tag 后显式 workflow_dispatch（token push 不会触发 push 工作流）
+#   3. 手动 workflow_dispatch（可指定 version，留空则读 pyproject.toml）
 #
 # 注意：workflow_dispatch 下 metadata-action 的 type=semver 不可靠，
-# 必须从 GITHUB_REF_NAME 显式解析版本号。
+# 必须显式解析版本号。
 #
 # FnOS FPK 由 Release 成功后自动 dispatch，并等待本工作流推送的 :{version} 就绪。
 #
@@ -21,6 +24,12 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "镜像版本号（如 1.0.0-1）；留空则读取 pyproject.toml"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -30,34 +39,43 @@ jobs:
   docker:
     name: Build and push image
     runs-on: ubuntu-latest
-    # 拒绝在非 v* ref 上误跑（例如 UI 里对 main 点 Run workflow）
-    if: startsWith(github.ref, 'refs/tags/v')
+    # tag push 或手动 dispatch；拒绝其它 ref（例如 UI 里对 main 点 Run workflow）
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    env:
+      # job 级 env 才能引用 secrets —— 步骤级 if 读不到 secrets 上下文。
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      INPUT_VERSION: ${{ github.event.inputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Resolve version from tag ref
+      - name: Resolve version
         id: ver
         run: |
           set -euo pipefail
-          ref="${GITHUB_REF_NAME}"
-          case "$ref" in
-            v*)
-              echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
-              echo "tag=$ref" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::Expected refs/tags/v*, got ref_name=$ref"
-              exit 1
-              ;;
-          esac
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          elif [[ -n "${INPUT_VERSION}" ]]; then
+            version="${INPUT_VERSION#v}"
+          else
+            version=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' pyproject.toml | head -1)
+          fi
+          if [[ -z "$version" ]]; then
+            echo "::error::Cannot resolve a version (no v* tag, no version input, no pyproject version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "[version] $version"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 只有配置了 Docker Hub 凭据才登录；未配置（例如 fork）时整步跳过。
       - name: Log in to Docker Hub
+        if: env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != ''
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -70,19 +88,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image names
+      - name: Resolve image names
         id: image
         run: |
-          echo "ghcr=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
-          echo "hub=${{ secrets.DOCKERHUB_USERNAME }}/octop" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          ghcr="ghcr.io/$(echo '${GITHUB_REPOSITORY}' | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "images<<EOF"
+            echo "$ghcr"
+            if [[ -n "${DOCKERHUB_USERNAME}" ]]; then
+              echo "${DOCKERHUB_USERNAME}/octop"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "[images] $ghcr dockerhub=${DOCKERHUB_USERNAME:-<none>}"
 
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ steps.image.outputs.hub }}
-            ${{ steps.image.outputs.ghcr }}
+          images: ${{ steps.image.outputs.images }}
           # 显式 raw tag：兼容 push.tags 与 Auto Tag 的 workflow_dispatch
           tags: |
             type=raw,value=${{ steps.ver.outputs.version }}
