@@ -92,7 +92,7 @@ jobs:
         id: image
         run: |
           set -euo pipefail
-          ghcr="ghcr.io/$(echo '${GITHUB_REPOSITORY}' | tr '[:upper:]' '[:lower:]')"
+          ghcr="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           {
             echo "images<<EOF"
             echo "$ghcr"
