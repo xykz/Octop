@@ -149,11 +149,21 @@ octop_run_init() {
         >"$init_log" 2>&1
 }
 
+# 数据目录不存在或为空 => 尚未初始化（与 `octop init` 的前置条件一致）。
+# 不能用某个具体文件名判断：PostgreSQL 或自定义 sqlite 路径下都没有
+# octop.db，但实例早已初始化。
+octop_home_is_empty() {
+    [ -d "$OCTOP_HOME" ] || return 0
+    local first
+    first="$(find "$OCTOP_HOME" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)"
+    [ -z "$first" ]
+}
+
 octop_entrypoint_main() {
     local default_password="${OCTOP_DEFAULT_PASSWORD:-}"
     local init_log reason
 
-    if [ ! -f "$DB_FILE" ]; then
+    if octop_home_is_empty; then
         echo "[entrypoint] 首次启动，正在初始化 Octop..."
         mkdir -p "$OCTOP_HOME"
 
